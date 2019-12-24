@@ -1,0 +1,53 @@
+plugins {
+  id 'maven-publish'
+  id 'com.github.johnrengelman.shadow' version '5.1.0'
+}
+
+apply plugin: 'java'
+apply plugin: 'application'
+apply plugin: 'com.github.johnrengelman.shadow'
+
+sourceCompatibility = '1.7'
+targetCompatibility = '1.7'
+compileJava.options.encoding = 'UTF-8'
+mainClassName = 'com.continent.Launcher'
+
+repositories {
+   mavenCentral()
+   mavenLocal()
+}
+
+publishing {
+    publications {
+        maven(MavenPublication) {
+            groupId = 'continent'
+            artifactId = 'continent'
+            version = '1.0.0'
+
+            from components.java
+        }
+    }
+}
+
+
+dependencies {
+   testCompile 'org.jmockit:jmockit:1.47'
+   testCompile 'junit:junit:4.12'
+   testCompile 'org.assertj:assertj-core:2.9.1'
+
+   compile 'org.yaml:snakeyaml:1.24'
+   compile 'io.netty:netty-codec-http:4.1.42.Final'
+   compile 'io.netty:netty-codec-socks:4.1.42.Final'
+   compile 'io.netty:netty-handler:4.1.42.Final'
+   compile 'io.netty:netty-tcnative-boringssl-static:2.0.26.Final'
+   compile 'org.bouncycastle:bcprov-jdk15on:1.61'
+   compile 'org.slf4j:slf4j-api:1.7.25'
+   compile "ch.qos.logback:logback-classic:1.2.3"
+
+   compileOnly 'org.fusesource.jansi:jansi:1.17.1'
+   compile 'com.google.guava:guava:27.1-android'
+}
+
+test {
+    jvmArgs "-javaagent:${classpath.find { it.name.contains("jmockit") }.absolutePath}"
+}
