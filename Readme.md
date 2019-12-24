@@ -8,8 +8,8 @@
 
 ## Usage examples
 
-[How to use Continent VPN with browser](vpn-browser-example.md)
-[How to use Continent VPN with Email client](vpn-email-client-example.md)
+[How to use Continent VPN with browser](vpn-browser-example.md)  
+[How to use Continent VPN with Email client](vpn-email-client-example.md)  
 [How to use Continent file container](container-example.md)
 
 ## VPN Features
