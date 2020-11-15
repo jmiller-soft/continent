@@ -40,7 +40,7 @@ public class SkeinStreamEngine implements StreamCipher {
                 throw new IllegalArgumentException();
             }
             paramsBuilder.setKey(key);
-            random = new SkeinRandom(null, paramsBuilder.build(), stateSize*8);
+            random = new SkeinRandom(null, paramsBuilder.build(), stateSize*8, 72);
             
             for (int i = 0; i < 8; i++) {
                 byte[] buf = new byte[stateSize];

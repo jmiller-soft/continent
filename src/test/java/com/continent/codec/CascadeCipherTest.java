@@ -2,6 +2,9 @@ package com.continent.codec;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.util.Arrays;
 import java.util.List;
 
@@ -21,7 +24,7 @@ public class CascadeCipherTest {
     private static final RandomService randomService = MockedRandomService.create();
 
     @Test
-    public void testTwoInCascade() {
+    public void testTwoInCascade() throws IOException {
         byte[] data = new byte[16];
         for (int i = 0; i < data.length; i++) {
             data[i] = (byte) i;
@@ -40,7 +43,7 @@ public class CascadeCipherTest {
     }
     
     @Test
-    public void testThreeInCascade() {
+    public void testThreeInCascade() throws IOException {
         byte[] data = new byte[16];
         for (int i = 0; i < data.length; i++) {
             data[i] = (byte) i;
@@ -64,33 +67,30 @@ public class CascadeCipherTest {
     }
 
 
-    protected void testChipers(byte[] data, List<Object> ciphers, byte[] encryptedData, RandomService randomService) {
+    protected void testChipers(byte[] data, List<Object> ciphers, byte[] encryptedData, RandomService randomService) throws IOException {
         CryptoService ch = new CryptoService();
         
-        byte[] serverKeyData = new byte[HandshakeService.MAX_KEYS_DATA_SIZE];
+        byte[] serverKeyData = new byte[CryptoService.MAX_KEYS_DATA_SIZE];
         Arrays.fill(serverKeyData, (byte)0);
+
+        byte[] iv = new byte[CryptoService.MAX_IV_SIZE];
+        randomService.getNonceGenerator().nextBytes(iv);
+
+        ch.setEncoderCiphers(ciphers, serverKeyData, iv);
+        ch.setDecoderCiphers(ciphers, iv, serverKeyData);
         
-        ch.setEncoderCiphers(ciphers, randomService, serverKeyData);
-        ch.setDecoderCiphers(ciphers, ch.getIvData(), serverKeyData);
-        
-        ByteBuf input = Unpooled.wrappedBuffer(data);
-        byte[] encrypted = new byte[data.length];
-        ByteBuf output = Unpooled.wrappedBuffer(encrypted);
-        output.resetWriterIndex();
-        
+        ByteArrayInputStream input = new ByteArrayInputStream(data);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+
         ch.encrypt(output, input);
         
-        System.out.println(Arrays.toString(encrypted));
-        assertThat(encrypted).isEqualTo(encryptedData);
+        System.out.println(Arrays.toString(output.toByteArray()));
+        assertThat(output.toByteArray()).isEqualTo(encryptedData);
 
-        ByteBuf input2 = Unpooled.wrappedBuffer(encrypted);
-        input2.resetReaderIndex();
-        byte[] decrypted = new byte[data.length];
-        ByteBuf output2 = Unpooled.wrappedBuffer(decrypted);
-        output2.resetWriterIndex();
-        
-        ch.decrypt(output2, input2);
-        assertThat(decrypted).isEqualTo(data);
+        ByteArrayInputStream input2 = new ByteArrayInputStream(output.toByteArray());
+        ByteArrayOutputStream output2 = new ByteArrayOutputStream();
+        ch.decrypt(output2, input2, input2.available());
+        assertThat(output2.toByteArray()).isEqualTo(data);
     }
     
 }

@@ -15,39 +15,30 @@
  */
 package com.continent.client;
 
-import java.net.URI;
-import java.util.Arrays;
-import java.util.List;
-
-import javax.net.ssl.SSLEngine;
-
 import com.continent.handler.BackendHandler;
 import com.continent.handler.RandomPacketHandler;
 import com.continent.handler.client.CipherClientDecoderHandler;
 import com.continent.handler.client.CipherClientEncoderHandler;
 import com.continent.handler.client.ClientMappedHostHandshakeHandler;
+import com.continent.random.RandomDelegator;
 import com.continent.random.RandomService;
-import com.continent.random.XoShiRo256StarStarRandom;
 import com.continent.service.CryptoService;
 import com.continent.service.HandshakeService;
 import com.continent.service.SessionData;
+import com.continent.service.SessionId;
 import io.netty.bootstrap.Bootstrap;
-import io.netty.channel.Channel;
-import io.netty.channel.ChannelFuture;
-import io.netty.channel.ChannelHandlerContext;
-import io.netty.channel.ChannelInboundHandlerAdapter;
-import io.netty.channel.ChannelInitializer;
-import io.netty.channel.ChannelOption;
+import io.netty.channel.*;
 import io.netty.channel.group.ChannelGroup;
-import io.netty.handler.ssl.ApplicationProtocolConfig;
+import io.netty.handler.ssl.*;
 import io.netty.handler.ssl.ApplicationProtocolConfig.Protocol;
 import io.netty.handler.ssl.ApplicationProtocolConfig.SelectedListenerFailureBehavior;
 import io.netty.handler.ssl.ApplicationProtocolConfig.SelectorFailureBehavior;
-import io.netty.handler.ssl.SslContext;
-import io.netty.handler.ssl.SslContextBuilder;
-import io.netty.handler.ssl.SslHandler;
-import io.netty.handler.ssl.SslHandshakeCompletionEvent;
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
+
+import javax.net.ssl.SSLEngine;
+import java.net.URI;
+import java.util.Arrays;
+import java.util.List;
 
 public class ProxyClientHandler extends ChannelInboundHandlerAdapter {
 
@@ -59,8 +50,9 @@ public class ProxyClientHandler extends ChannelInboundHandlerAdapter {
     private final boolean tcpNodelay;
     private final List<URI> urls;
     private final Integer delayInMillis;
-    private final XoShiRo256StarStarRandom splittableRandom;
     private final boolean useRandomPackets;
+
+    private final RandomDelegator randomGenerator;
     
     public ProxyClientHandler(List<URI> urls, 
             RandomService randomService, HandshakeService handshakeService, String mappedHost, boolean tcpNodelay, ChannelGroup group, Integer delayInMillis, boolean useRandomPackets) {
@@ -71,8 +63,8 @@ public class ProxyClientHandler extends ChannelInboundHandlerAdapter {
         this.tcpNodelay = tcpNodelay;
         this.group = group;
         this.delayInMillis = delayInMillis;
-        this.splittableRandom = new XoShiRo256StarStarRandom(randomService.getNonceGenerator().nextLong());
         this.useRandomPackets = useRandomPackets;
+        this.randomGenerator = randomService.createRandomDataGenerator();
     }
 
     @Override
@@ -94,9 +86,19 @@ public class ProxyClientHandler extends ChannelInboundHandlerAdapter {
                  SessionData sessionData = handshakeService.getClientSession();
                  
                  CryptoService holder = new CryptoService();
-                 holder.setEncoderCiphers(sessionData.getClientCiphers(), randomService, sessionData.getClientKey());
+
+                 byte[] sessionId = new byte[SessionId.SIZE];
+                 byte[] iv = new byte[CryptoService.MAX_IV_SIZE];
+                 sessionData.getLock().lock();
+                 sessionData.getClientSessionGenerator().nextBytes(sessionId);
+                 sessionData.getClientIVGenerator().nextBytes(iv);
+                 sessionData.getLock().unlock();
+
+                 handshakeService.generateNewServerSessionId();
+
+                 holder.setEncoderCiphers(sessionData.getClientCiphers(), sessionData.getClientKey(), iv);
                  
-                 group.add(serverChannel);
+//                 group.add(serverChannel);
                  
                  if (serverUri.getScheme().equals("https")) {
                      SslContextBuilder sslContextBuilder = SslContextBuilder.forClient();
@@ -136,11 +138,11 @@ public class ProxyClientHandler extends ChannelInboundHandlerAdapter {
 
                      });
                  }
-                 
+
 //                     ch.pipeline().addLast(new LoggingHandler("encrypted", LogLevel.INFO));
-                 serverChannel.pipeline().addLast(new CipherClientEncoderHandler(splittableRandom, sessionData.getSessionId(), mappedHost, holder));
+                 serverChannel.pipeline().addLast(new CipherClientEncoderHandler(randomGenerator, sessionId, mappedHost, holder));
                  serverChannel.pipeline().addLast(new CipherClientDecoderHandler(handshakeService, holder, 
-                         sessionData.getSessionId(), sessionData.getServerCiphers(), sessionData.getServerKey()));
+                         sessionData.getServerCiphers(), sessionData.getServerKey()));
 //                     ch.pipeline().addLast(new LoggingHandler("decrypted", LogLevel.INFO));
                  
                  if (mappedHost != null) {
@@ -169,10 +171,10 @@ public class ProxyClientHandler extends ChannelInboundHandlerAdapter {
         Channel serverChannel = f.channel();
 
         if (useRandomPackets) {
-            ctx.pipeline().addLast(new RandomPacketHandler(splittableRandom, serverChannel));
+            ctx.pipeline().addLast(new RandomPacketHandler(randomGenerator, serverChannel));
         }
         
-        ctx.pipeline().addLast(new BackendHandler(splittableRandom, serverChannel, delayInMillis));
+        ctx.pipeline().addLast(new BackendHandler(randomGenerator, serverChannel, delayInMillis));
     }
 
 }

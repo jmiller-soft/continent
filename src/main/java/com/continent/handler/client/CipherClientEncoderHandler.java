@@ -1,8 +1,10 @@
 package com.continent.handler.client;
 
 import com.continent.handler.CipherEncoderHandler;
-import com.continent.random.XoShiRo256StarStarRandom;
+import com.continent.random.RandomDelegator;
 import com.continent.service.CryptoService;
+import com.continent.service.Protocol;
+import com.continent.service.SessionId;
 import io.netty.buffer.ByteBuf;
 
 public class CipherClientEncoderHandler extends CipherEncoderHandler {
@@ -12,9 +14,9 @@ public class CipherClientEncoderHandler extends CipherEncoderHandler {
     
     private final String mappedHost;
     
-    public CipherClientEncoderHandler(XoShiRo256StarStarRandom randomService,
+    public CipherClientEncoderHandler(RandomDelegator randomGenerator,
                                       byte[] sessionId, String mappedHost, CryptoService holder) {
-        super(randomService, sessionId, holder);
+        super(randomGenerator, sessionId, holder);
         
         this.mappedHost = mappedHost;
     }
@@ -26,10 +28,10 @@ public class CipherClientEncoderHandler extends CipherEncoderHandler {
             byte[] mappedHostBytes = mappedHost.getBytes();
             buf.writeByte(mappedHostBytes.length);
             buf.writeBytes(mappedHostBytes);
-            return CryptoService.MAX_IV_SIZE + CryptoService.MAC_ID_SIZE + CryptoService.TUNNEL_TYPE_SIZE + mappedHostBytes.length + CryptoService.DATA_LENGTH_SIZE + CryptoService.RANDOM_DATA_LENGTH_SIZE;
+            return SessionId.SIZE + Protocol.TUNNEL_TYPE_SIZE + mappedHostBytes.length + Protocol.DATA_LENGTH_SIZE + Protocol.RANDOM_DATA_LENGTH_SIZE;
         } else {
             buf.writeByte(SOCKS5_TUNNEL);
-            return CryptoService.MAX_IV_SIZE + CryptoService.MAC_ID_SIZE + CryptoService.TUNNEL_TYPE_SIZE + CryptoService.DATA_LENGTH_SIZE + CryptoService.RANDOM_DATA_LENGTH_SIZE;
+            return SessionId.SIZE + Protocol.TUNNEL_TYPE_SIZE + Protocol.DATA_LENGTH_SIZE + Protocol.RANDOM_DATA_LENGTH_SIZE;
         }
     }
 

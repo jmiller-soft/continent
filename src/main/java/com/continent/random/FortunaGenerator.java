@@ -107,8 +107,7 @@ public class FortunaGenerator implements RandomGenerator {
     }
     
     public FortunaGenerator(byte[] seed) {
-        // start from index = 1 since byte at index = 0 is used to select cipher   
-        this(seed, selectCipher(seed), 1, seed.length-1);
+        this(seed, selectCipher(seed), 0, seed.length);
     }
 
     public FortunaGenerator(byte[] seed, BlockCipher cipher) {

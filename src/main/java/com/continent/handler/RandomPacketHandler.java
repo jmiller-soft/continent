@@ -1,18 +1,14 @@
 package com.continent.handler;
 
-import java.util.concurrent.TimeUnit;
-
-import com.continent.random.XoShiRo256StarStarRandom;
+import com.continent.random.RandomDelegator;
+import com.continent.random.RandomService;
+import io.netty.buffer.ByteBuf;
+import io.netty.buffer.Unpooled;
+import io.netty.channel.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import io.netty.buffer.ByteBuf;
-import io.netty.buffer.Unpooled;
-import io.netty.channel.Channel;
-import io.netty.channel.ChannelDuplexHandler;
-import io.netty.channel.ChannelFuture;
-import io.netty.channel.ChannelFutureListener;
-import io.netty.channel.ChannelHandlerContext;
+import java.util.concurrent.TimeUnit;
 
 public class RandomPacketHandler extends ChannelDuplexHandler {
 
@@ -21,22 +17,22 @@ public class RandomPacketHandler extends ChannelDuplexHandler {
     private boolean sent;
     private int maxPacketSize;
     private final Channel inboundChannel;
-    private final XoShiRo256StarStarRandom splittableRandom;
+    private final RandomDelegator randomGenerator;
     private final int minTimeout;
     private final int maxTimeout;
     
     private long sentData;
     private long lastSentTime = System.currentTimeMillis();
 
-    public RandomPacketHandler(XoShiRo256StarStarRandom splittableRandom, Channel inboundChannel) {
-        this(splittableRandom, inboundChannel, 2000, 4000);
+    public RandomPacketHandler(RandomDelegator randomGenerator, Channel inboundChannel) {
+        this(randomGenerator, inboundChannel, 2000, 4000);
     }
 
-    public RandomPacketHandler(XoShiRo256StarStarRandom splittableRandom, Channel inboundChannel, int minTimeout, int maxTimeout) {
+    public RandomPacketHandler(RandomDelegator randomGenerator, Channel inboundChannel, int minTimeout, int maxTimeout) {
         super();
         this.inboundChannel = inboundChannel;
-        this.splittableRandom = splittableRandom.split();
-        maxPacketSize = splittableRandom.nextInt(5000);
+        this.randomGenerator = randomGenerator;
+        maxPacketSize = randomGenerator.nextInt(5000);
         this.minTimeout = minTimeout;
         this.maxTimeout = maxTimeout;
     }
@@ -70,7 +66,7 @@ public class RandomPacketHandler extends ChannelDuplexHandler {
                 && sentData > 10000) {
             maxDelay = maxTimeout;
         }
-        int delay = splittableRandom.nextInt(maxDelay);
+        int delay = randomGenerator.nextInt(maxDelay);
 
         ctx.executor().schedule(new Runnable() {
             @Override
@@ -79,7 +75,7 @@ public class RandomPacketHandler extends ChannelDuplexHandler {
                     return;
                 }
                 
-                ByteBuf randomDataSize = Unpooled.copyInt(splittableRandom.nextInt(maxPacketSize));
+                ByteBuf randomDataSize = Unpooled.copyInt(randomGenerator.nextInt(maxPacketSize));
                 ByteBuf randomPacket = Unpooled.wrappedBuffer(CipherEncoderHandler.RANDOM_PACKET_HEADER.copy(), randomDataSize);
                 
                 ChannelFuture f = inboundChannel.writeAndFlush(randomPacket);

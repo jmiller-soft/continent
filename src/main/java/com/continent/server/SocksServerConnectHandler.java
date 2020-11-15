@@ -15,23 +15,12 @@
  */
 package com.continent.server;
 
-import java.util.Set;
-
-import com.continent.random.XoShiRo256StarStarRandom;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import com.continent.handler.BackendHandler;
 import com.continent.handler.RandomPacketHandler;
 import com.continent.handler.server.ConnectionHandler;
+import com.continent.random.RandomDelegator;
 import io.netty.bootstrap.Bootstrap;
-import io.netty.channel.Channel;
-import io.netty.channel.ChannelFuture;
-import io.netty.channel.ChannelFutureListener;
-import io.netty.channel.ChannelHandler;
-import io.netty.channel.ChannelHandlerContext;
-import io.netty.channel.ChannelOption;
-import io.netty.channel.SimpleChannelInboundHandler;
+import io.netty.channel.*;
 import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.handler.codec.socksx.SocksMessage;
 import io.netty.handler.codec.socksx.v5.DefaultSocks5CommandResponse;
@@ -40,6 +29,10 @@ import io.netty.handler.codec.socksx.v5.Socks5CommandStatus;
 import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.FutureListener;
 import io.netty.util.concurrent.Promise;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.util.Set;
 
 @ChannelHandler.Sharable
 public final class SocksServerConnectHandler extends SimpleChannelInboundHandler<SocksMessage> {
@@ -52,11 +45,11 @@ public final class SocksServerConnectHandler extends SimpleChannelInboundHandler
     private final Set<String> whiteListedHosts;
     private final boolean tcpNodelay;
     private final int delayInMillis;
-    private final XoShiRo256StarStarRandom splittableRandom;
+    private final RandomDelegator randomGenerator;
     private final byte[] randomTimeouts;
     
-    public SocksServerConnectHandler(XoShiRo256StarStarRandom splittableRandom, Set<String> whiteListedHosts, boolean tcpNodelay, int delayInMillis, byte[] randomTimeouts) {
-        this.splittableRandom = splittableRandom;
+    public SocksServerConnectHandler(RandomDelegator randomGenerator, Set<String> whiteListedHosts, boolean tcpNodelay, int delayInMillis, byte[] randomTimeouts) {
+        this.randomGenerator = randomGenerator;
         this.whiteListedHosts = whiteListedHosts;
         this.tcpNodelay = tcpNodelay;
         this.delayInMillis = delayInMillis;
@@ -92,9 +85,9 @@ public final class SocksServerConnectHandler extends SimpleChannelInboundHandler
                                         }
                                         
                                         if (randomTimeouts[0] > 0) {
-                                            outboundChannel.pipeline().addLast(new RandomPacketHandler(splittableRandom, ctx.channel(), randomTimeouts[0]*100, randomTimeouts[1]*100));
+                                            outboundChannel.pipeline().addLast(new RandomPacketHandler(randomGenerator, ctx.channel(), randomTimeouts[0]*100, randomTimeouts[1]*100));
                                         }
-                                        outboundChannel.pipeline().addLast(new BackendHandler(splittableRandom, ctx.channel(), delayInMillis));
+                                        outboundChannel.pipeline().addLast(new BackendHandler(randomGenerator, ctx.channel(), delayInMillis));
                                         ctx.pipeline().addLast(new BackendHandler(outboundChannel));
 //                                        outboundChannel.pipeline().addLast(new SocksRelayHandler(ctx.channel(), true));
 //                                        ctx.pipeline().addLast(new SocksRelayHandler(outboundChannel, false));

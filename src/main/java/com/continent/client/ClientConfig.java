@@ -13,7 +13,23 @@ public class ClientConfig {
     String key;
     Integer maxWriteDelayMs;
     Map<Integer, String> portMapping;
-    
+    int nonceSeedInterval;
+    int keySeedInterval;
+
+    public int getNonceSeedInterval() {
+        return nonceSeedInterval;
+    }
+    public void setNonceSeedInterval(int nonceSeedInterval) {
+        this.nonceSeedInterval = nonceSeedInterval;
+    }
+
+    public Integer getKeySeedInterval() {
+        return keySeedInterval;
+    }
+    public void setKeySeedInterval(Integer keySeedInterval) {
+        this.keySeedInterval = keySeedInterval;
+    }
+
     public List<String> getServers() {
         return servers;
     }

@@ -4,18 +4,14 @@ package com.continent.service;
 import com.continent.engine.rc6.RC6_256_256Engine;
 import com.continent.handler.HandshakePacketSplitter;
 import com.continent.handler.client.ClientFirstPacketDecoder;
-import com.continent.random.FortunaGenerator;
 import com.continent.random.RandomDelegator;
 import com.continent.random.RandomService;
-import com.continent.random.XoShiRo256StarStarRandom;
+import com.continent.random.SkeinRandom;
 import com.google.common.base.Function;
 import com.google.common.io.BaseEncoding;
 import com.google.common.util.concurrent.*;
 import io.netty.bootstrap.Bootstrap;
-import io.netty.buffer.ByteBuf;
-import io.netty.buffer.ByteBufOutputStream;
-import io.netty.buffer.ByteBufUtil;
-import io.netty.buffer.Unpooled;
+import io.netty.buffer.*;
 import io.netty.channel.*;
 import io.netty.channel.group.ChannelGroup;
 import io.netty.channel.group.ChannelGroupFuture;
@@ -41,50 +37,57 @@ import org.bouncycastle.crypto.macs.SkeinMac;
 import org.bouncycastle.crypto.modes.CFBBlockCipher;
 import org.bouncycastle.crypto.params.KeyParameter;
 import org.bouncycastle.crypto.params.ParametersWithIV;
+import org.bouncycastle.crypto.prng.RandomGenerator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.net.ssl.SSLEngine;
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.lang.reflect.Method;
 import java.net.URI;
 import java.nio.ByteBuffer;
-import java.util.*;
-import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.TimeUnit;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
+import java.util.Random;
+import java.util.concurrent.*;
 
 /**
  * CPub, SPub session public keys
  *
- * 1. R + enc(H(DPub), R, CPub) + Tag + RandomTail -> S (size: 1066)
- * 2. C <- R + enc(H(DPub), R, SPub) + enc(CPub, ServerKey + ServerCYPHERSID) + enc(DPub, ServerSecurityCode + MAC(ServerSecurityCode, PACKET)) + Tag + RandomTail (size: 5154)
- * 3. enc(SPub, ClientKey + ClientCYPHERSID + ServerSecurityCode + ClientSecurityCode + RandomTimings) + Tag + RandomTail -> S (size: 4096)
- * 4. C <- enc(CPub, ClientSecurityCode) + Tag + RandomTail (size: 1030)
+ * 1. R + enc(H(DPub), R, CPub) + Tag + RandomTail -> S
+ *    packet size: 32 + 2066 + 8
+ *
+ * 2. C <- R + enc(H(DPub), R, SPub) + enc(CPub, ServerIVSeed + ServerKey + ServerCYPHERSID) + enc(DPub, ServerSecurityCode + MAC(ServerSecurityCode, PACKET)) + Tag + RandomTail
+ *    packet size: 32 + 2066 + 2062*2 + 2062 + 8
+ *
+ * 3. enc(SPub, ClientIVSeed + ClientKey + ClientCYPHERSID + ServerSecurityCode + ClientSecurityCode + RandomTimings) + Tag + RandomTail -> S
+ *    packet size: 2062*3 + 8
+ *
+ * 4. C <- enc(CPub, ClientSecurityCode) + Tag + RandomTail
+ *    packet size: 2062 + 8
  */
 public class HandshakeService {
 
-    public static final int FIRST_SERVER_PACKET_LENGTH = HandshakeService.publicKeyIVSize + HandshakeService.ntruPublicKeySize + HandshakeService.ntruEncryptedChunkSize*(HandshakeService.ntruServerChunks + 1) + HandshakeService.tagSize;
+    public static final int FIRST_SERVER_PACKET_LENGTH = HandshakeService.publicKeyIVSize + HandshakeService.ntruPublicKeySize
+                                                            + HandshakeService.ntruEncryptedChunkSize*HandshakeService.ntruServerChunks
+                                                                + HandshakeService.ntruEncryptedChunkSize + HandshakeService.tagSize;
 
 //    private final Logger log = NOPLogger.NOP_LOGGER;
     private final Logger log = LoggerFactory.getLogger(HandshakeService.class);
 
-    // max key data size to use up to 3 cascade ciphers
-    //
-    // 32 - max key size for any block cipher except SkeinStream, Threefish and RC6
-    // 128 - max key size for Threefish-1024, SkeinStream-1024 or RC6-1024
-    // 256 - max key size for RC6-2048
-    public static final int MAX_KEYS_DATA_SIZE = 32 + 128 + 256;
+    private static final int IV_SEED_SIZE = 64;
     public static final int publicKeyIVSize = 32;
     private static final int securityCodeSize = 32;
     private static final int cipherIdSize = 2;
     
-    public static final int ntruPublicKeySize = 1026;
-    public static final int ntruDecryptedChunkSize = 106;
-    public static final int ntruServerChunks = 4;
-    public static final int ntruClientChunks = 5;
-    public static final int ntruEncryptedChunkSize = 1022;
+    public static final int ntruPublicKeySize = 2066;
+    public static final int ntruDecryptedChunkSize = 247;
+    public static final int ntruServerChunks = 2;
+    public static final int ntruClientChunks = 3;
+    public static final int ntruEncryptedChunkSize = 2062;
     public static final int tagSize = 8;
     
     private byte[] id;
@@ -101,11 +104,12 @@ public class HandshakeService {
     private byte[] clientKeys;
     private List<Object> serverCiphers;
     private byte[] serverKeys;
+    private byte[] serverIVSeed;
+    private byte[] clientIVSeed;
     
     private ExecutorService executorService;
     
     private volatile SessionData clientSession;
-    private Queue<SessionData> sessions;
     private RandomService randomService;
     private volatile SettableFuture<Void> handshakeFuture = SettableFuture.create();
     private CombinationsGenerator combinationsGenerator = new CombinationsGenerator();
@@ -113,28 +117,30 @@ public class HandshakeService {
     private byte[] clientSecurityCode;
     private volatile boolean clientInReconnection;
 
-    private final XoShiRo256StarStarRandom splittableRandom;
-
-    
     private Map<byte[], byte[]> id2PubKey;
     
     private EventLoopGroup eventLoopGroup;
     
     private static final ConcurrentMap<Long, Boolean> authentificatedMacs = PlatformDependent.newConcurrentHashMap();
-    
+
     private List<URI> urls;
     private ChannelGroup group;
-    
+
+    private final RandomDelegator randomDataGenerator;
+    private final Map<SessionId, SessionData> serverSessionIds = new ConcurrentHashMap<SessionId, SessionData>();
+    private Map<SessionId, SessionData> clientSessionIds;
+
     public HandshakeService(ExecutorService executorService, RandomService randomService, EventLoopGroup eventLoopGroup, String idStr, List<URI> urls, ChannelGroup group) {
         this.executorService = executorService;
         this.randomService = randomService;
-        this.splittableRandom = new XoShiRo256StarStarRandom(randomService.getNonceGenerator().nextLong());
         this.eventLoopGroup = eventLoopGroup;
-        
+        this.randomDataGenerator = randomService.createRandomDataGenerator();
+
         String[] parts = idStr.split(":");
         id = BaseEncoding.base64().decode(parts[0]);
         byte[] seed = BaseEncoding.base64().decode(parts[1]);
-        EncryptionKeyPair kp = generateKeyPair(new RandomDelegator(new FortunaGenerator(seed)), false);
+        SkeinRandom random = new SkeinRandom(seed, null, com.continent.engine.skein.SkeinDigest.SKEIN_256, 72);
+        EncryptionKeyPair kp = generateKeyPair(new RandomDelegator(random), false);
         pubKey = kp.getPublic().getEncoded();
         privKey = kp.getPrivate().getEncoded();
         encryptionKey = calcPubKeyHash();
@@ -142,12 +148,12 @@ public class HandshakeService {
         this.group = group;
     }
     
-    public HandshakeService(ExecutorService executorService, RandomService randomService, Queue<SessionData> sessions, Map<byte[], byte[]> id2PubKey) {
+    public HandshakeService(ExecutorService executorService, RandomService randomService, Map<SessionId, SessionData> clientSessionIds, Map<byte[], byte[]> id2PubKey) {
         this.executorService = executorService;
         this.randomService = randomService;
-        this.sessions = sessions;
-        this.splittableRandom = new XoShiRo256StarStarRandom(randomService.getNonceGenerator().nextLong());
+        this.clientSessionIds = clientSessionIds;
         this.id2PubKey = id2PubKey;
+        this.randomDataGenerator = randomService.createRandomDataGenerator();
     }
     
     public ListenableFuture<Void> connect() {
@@ -385,17 +391,27 @@ public class HandshakeService {
 
                 byte[] ciphersId = new byte[cipherIdSize];
                 randomService.getKeyGenerator().nextBytes(ciphersId);
-                int index = getCypherId(ciphersId);
-                serverCiphers = combinationsGenerator.getCiphers(index, 3);
-                
+                serverCiphers = combinationsGenerator.getCiphers(ciphersId, 3);
+
+                serverIVSeed = new byte[IV_SEED_SIZE];
+                randomService.getKeyGenerator().nextBytes(serverIVSeed);
+
                 serverKeys = generateKeysData();
-                ListenableFuture<ByteBuf> encryptedServerKeysFuture = encryptCipherKeys(serverKeys, clientPublicKey, ciphersId, ctx, new byte[] {}, new byte[] {}, new byte[] {});
+                byte[] keysDataJoined = join(serverIVSeed, serverKeys, ciphersId);
+
+                if (log.isDebugEnabled()) {
+                    log.debug("sent iv seed {}\n {}", serverIVSeed.length, prettyDump(serverIVSeed));
+                    log.debug("sent keys {}\n {}", serverKeys.length, prettyDump(serverKeys));
+                    log.debug("sent ciphers id {}\n {}", ciphersId.length, prettyDump(ciphersId));
+                }
+
+                ListenableFuture<ByteBuf> encryptedServerKeysFuture = encryptCipherKeys(keysDataJoined, clientPublicKey, ctx);
                 return Futures.transform(encryptedServerKeysFuture, new Function<ByteBuf, ByteBuf>() {
                     @Override
                     public ByteBuf apply(ByteBuf encryptedServerKeys) {
                         serverSecurityCode = new byte[securityCodeSize];
                         randomService.getKeyGenerator().nextBytes(serverSecurityCode);
-                        
+
                         if (log.isDebugEnabled()) {
                             log.debug("sent uncrypted server security code\n{}", prettyDump(serverSecurityCode));
                         }
@@ -411,9 +427,7 @@ public class HandshakeService {
                         }
                         
                         byte[] securityData = join(serverSecurityCode, securityMac);
-                        byte[] encryptedSecurityData = CryptoService.encryptCipherKeys(securityData, new EncryptionPublicKey(pubKey), randomService);
-//                        securityData = pad(securityData);
-//                        byte[] encryptedSecurityData = CryptoService.NTRU.encrypt(securityData, new EncryptionPublicKey(pubKey));
+                        byte[] encryptedSecurityData = CryptoService.encryptCipherKeys(securityData, new EncryptionPublicKey(pubKey), randomService.getKeyGenerator());
                         burn(securityData);
                         result.writeBytes(encryptedSecurityData);
                         
@@ -442,7 +456,7 @@ public class HandshakeService {
     }
 
     private ByteBuf createRehandshakePacket(final ChannelHandlerContext ctx) {
-        int randomLength = getRandomNumberInRange(splittableRandom, HandshakeService.FIRST_SERVER_PACKET_LENGTH, HandshakeService.FIRST_SERVER_PACKET_LENGTH*2);
+        int randomLength = getRandomNumberInRange(randomDataGenerator, HandshakeService.FIRST_SERVER_PACKET_LENGTH, HandshakeService.FIRST_SERVER_PACKET_LENGTH*2);
         ByteBuf buf = ctx.alloc().buffer(randomLength);
         addRandomTail(buf, randomLength);
         ctx.executor().schedule(new Runnable() {
@@ -450,16 +464,16 @@ public class HandshakeService {
             public void run() {
                 ctx.close();
             }
-        }, getRandomNumberInRange(splittableRandom, 2, 10), TimeUnit.SECONDS);
+        }, getRandomNumberInRange(randomDataGenerator, 2, 10), TimeUnit.SECONDS);
         return buf;
     }
 
-    private static int getRandomNumberInRange(Random r, int min, int max) {
+    private int getRandomNumberInRange(RandomDelegator randomDataGenerator, int min, int max) {
         if (min >= max) {
             throw new IllegalArgumentException("max must be greater than min");
         }
 
-        return r.nextInt((max - min) + 1) + min;
+        return randomDataGenerator.nextInt((max - min) + 1) + min;
     }
     
     private ListenableFuture<EncryptionKeyPair> generateKeyPair() {
@@ -469,6 +483,14 @@ public class HandshakeService {
                 return Futures.immediateFuture(generateKeyPair(randomService.getKeyGenerator(), true));
             }
         }, executorService);
+    }
+
+    public static void main(String[] args) throws ExecutionException, InterruptedException {
+        HandshakeService hs = new HandshakeService(Executors.newSingleThreadExecutor(), new RandomService(12, 12), null, null);
+        ListenableFuture<EncryptionKeyPair> s = hs.generateKeyPair();
+        EncryptionKeyPair t = s.get();
+        System.out.println(t.getPublic().getEncoded().length);
+        System.out.println(t.getPrivate().getEncoded().length);
     }
 
     private EncryptionKeyPair generateKeyPair(Random random, boolean multiThreaded) {
@@ -534,7 +556,7 @@ public class HandshakeService {
                 new EncryptionKeyPair(new EncryptionPrivateKey(privKey), new EncryptionPublicKey(pubKey)));
         serverSecurityCode = Arrays.copyOf(decryptedSecurityData, 32);
         byte[] securityMac = Arrays.copyOfRange(decryptedSecurityData, 32, 64);
-        
+
         if (log.isDebugEnabled()) {
             log.debug("2nd packet uncrypted server security code\n{}", prettyDump(serverSecurityCode));
             log.debug("2nd packet uncrypted server security mac\n{}", prettyDump(securityMac));
@@ -551,26 +573,41 @@ public class HandshakeService {
         }
         
         EncryptionPublicKey serverPublicKey;
-
-        ByteBuffer sk = ByteBuffer.wrap(encryptedServerKeys);
         try {
             serverPublicKey = decryptPublicKey(publicKeyIV, encryptedServerPublicKey);
-            serverKeys = CryptoService.decryptCipherKeys(sk, clientKeyPair, ntruServerChunks);
         } catch (Exception e) {
             IllegalStateException ex = new IllegalStateException("Unable to decryptWithPassword server key on channel: " + ctx.channel(), e);
             handshakeFuture.setException(ex);
             close(ctx);
             return Futures.immediateFailedFuture(ex);
         }
-        byte[] serverCiphersId = Arrays.copyOfRange(serverKeys, MAX_KEYS_DATA_SIZE, MAX_KEYS_DATA_SIZE + cipherIdSize);
+
+        final byte[] keysData;
+        try {
+            keysData = CryptoService.decryptCipherKeys(new ByteArrayInputStream(encryptedServerKeys), clientKeyPair);
+        } catch (Exception e) {
+            close(ctx);
+            log.error("Can't decrypt server keys data", e);
+            return null;
+        }
+
+        ByteBuf serverKeysBuf = Unpooled.wrappedBuffer(keysData);
+        serverIVSeed = new byte[IV_SEED_SIZE];
+        serverKeysBuf.readBytes(serverIVSeed);
+        serverKeys = new byte[CryptoService.MAX_KEYS_DATA_SIZE];
+        serverKeysBuf.readBytes(serverKeys);
+        byte[] serverCiphersId = new byte[cipherIdSize];
+        serverKeysBuf.readBytes(serverCiphersId);
+        serverKeysBuf.release();
+
+        burn(keysData);
 
         if (log.isDebugEnabled()) {
-            log.debug("2nd packet uncrypted server keys {}\n{}", serverKeys.length, prettyDump(serverKeys));
+            log.debug("2nd packet uncrypted server keys {}\n{}", keysData.length, prettyDump(keysData));
             log.debug("2nd packet uncrypted server ciphers id {}\n{}", serverCiphersId.length, prettyDump(serverCiphersId));
         }
         
-        int serverIndex = getCypherId(serverCiphersId);
-        serverCiphers = combinationsGenerator.getCiphers(serverIndex, 3);
+        serverCiphers = combinationsGenerator.getCiphers(serverCiphersId, 3);
         if (serverCiphers == null) {
             IllegalStateException ex = new IllegalStateException("Unable to decryptWithPassword data. Data length: " + in.writerIndex() + " Channel: " + ctx.channel());
             close(ctx);
@@ -580,16 +617,27 @@ public class HandshakeService {
 
         byte[] ciphersId = new byte[cipherIdSize];
         randomService.getKeyGenerator().nextBytes(ciphersId);
-        int index = getCypherId(ciphersId);
-        clientCiphers = combinationsGenerator.getCiphers(index, 3);
+        clientCiphers = combinationsGenerator.getCiphers(ciphersId, 3);
+
+        clientIVSeed = new byte[IV_SEED_SIZE];
+        randomService.getKeyGenerator().nextBytes(clientIVSeed);
+
         clientKeys = generateKeysData();
         
         clientSecurityCode = new byte[securityCodeSize];
         randomService.getKeyGenerator().nextBytes(clientSecurityCode);
-        
-//        ListenableFuture<ByteBuf> future = encryptCipherKeys(clientKeys, serverPublicKey, ciphersId, ctx, serverSecurityCode, clientSecurityCode, new byte[] {2, 5});
-        ListenableFuture<ByteBuf> future = encryptCipherKeys(clientKeys, serverPublicKey, ciphersId, ctx, serverSecurityCode, clientSecurityCode, new byte[] {20, 40});
-//        ListenableFuture<ByteBuf> future = encryptCipherKeys(clientKeys, serverPublicKey, ciphersId, ctx, serverSecurityCode, clientSecurityCode, new byte[] {0, 0});
+
+        byte[] keysDataJoined = join(clientIVSeed, clientKeys, ciphersId, serverSecurityCode, clientSecurityCode, new byte[] {20, 40});
+
+        if (log.isDebugEnabled()) {
+            log.debug("sent iv seed {}\n {}", clientIVSeed.length, prettyDump(clientIVSeed));
+            log.debug("sent keys {}\n {}", clientKeys.length, prettyDump(clientKeys));
+            log.debug("sent ciphers id {}\n {}", ciphersId.length, prettyDump(ciphersId));
+            log.debug("sent server security code {}\n {}", serverSecurityCode.length, prettyDump(serverSecurityCode));
+            log.debug("sent client security code {}\n {}", clientSecurityCode.length, prettyDump(clientSecurityCode));
+        }
+
+        ListenableFuture<ByteBuf> future = encryptCipherKeys(keysDataJoined, serverPublicKey, ctx);
         return Futures.transform(future, new Function<ByteBuf, ByteBuf>() {
             @Override
             public ByteBuf apply(ByteBuf encryptedClientKeys) {
@@ -619,15 +667,17 @@ public class HandshakeService {
         
         final byte[] clientKeyData;
         try {
-            clientKeyData = CryptoService.decryptCipherKeys(keysIn.nioBuffer(), serverKeyPair, ntruClientChunks);
+            clientKeyData = CryptoService.decryptCipherKeys(new ByteBufInputStream(keysIn), serverKeyPair);
         } catch (Exception e) {
             close(ctx);
-            log.error("Can't decryptWithPassword keys", e);
+            log.error("Can't decrypt client keys data", e);
             return null;
         }
-        
+
         ByteBuf clientKeyDataBuf = Unpooled.wrappedBuffer(clientKeyData);
-        byte[] keyData = new byte[MAX_KEYS_DATA_SIZE];
+        clientIVSeed = new byte[IV_SEED_SIZE];
+        clientKeyDataBuf.readBytes(clientIVSeed);
+        final byte[] keyData = new byte[CryptoService.MAX_KEYS_DATA_SIZE];
         clientKeyDataBuf.readBytes(keyData);
         byte[] ciphersId = new byte[cipherIdSize];
         clientKeyDataBuf.readBytes(ciphersId);
@@ -639,8 +689,10 @@ public class HandshakeService {
         clientKeyDataBuf.readBytes(randomTimeouts);
         clientKeyDataBuf.release();
 
+        burn(clientKeyData);
+
         if (log.isDebugEnabled()) {
-            log.debug("2nd packet keys data {}\n{}", keyData.length, prettyDump(keyData));
+            log.debug("2nd packet keys data {}\n{}", clientKeyData.length, prettyDump(clientKeyData));
             log.debug("2nd packet uncrypted ciphers id {}\n{}", ciphersId.length, prettyDump(ciphersId));
             log.debug("2nd packet uncrypted server security code {}\n{}", inServerSecurityCode.length, prettyDump(inServerSecurityCode));
             log.debug("2nd packet uncrypted client security code {}\n{}", clientSecurityCode.length, prettyDump(clientSecurityCode));
@@ -652,18 +704,11 @@ public class HandshakeService {
             return Futures.immediateFuture(null);
         }
         
-        int index = getCypherId(ciphersId);
-        final List<Object> clientCiphers = combinationsGenerator.getCiphers(index, 3);
+        final List<Object> clientCiphers = combinationsGenerator.getCiphers(ciphersId, 3);
         if (clientCiphers == null) {
             close(ctx);
             log.error("Can't decryptWithPassword data. Data length: {} on channel: {}", in.writerIndex(), ctx.channel());
             return null;
-        }
-        
-        final byte[] sessionId = xor(clientSecurityCode, serverSecurityCode);
-        
-        if (log.isDebugEnabled()) {
-            log.debug("sessionId\n{}", prettyDump(sessionId));
         }
         
         return Futures.submitAsync(new AsyncCallable<ByteBuf>() {
@@ -676,9 +721,25 @@ public class HandshakeService {
                 
                 addTagAndRandomTail(buf);
                 
-                SessionData data = new SessionData(clientKeyData, serverKeys, clientCiphers, serverCiphers, sessionId, randomTimeouts);
-                sessions.add(data);
-                
+                SessionData data = new SessionData(keyData, serverKeys, clientCiphers, serverCiphers, randomTimeouts);
+
+                RandomGenerator clientRandomGenerator = new SkeinRandom(clientSecurityCode, null, com.continent.engine.skein.SkeinDigest.SKEIN_256, 72);
+                data.setClientSessionGenerator(clientRandomGenerator);
+                RandomGenerator serverRandomGenerator = new SkeinRandom(serverSecurityCode, null, com.continent.engine.skein.SkeinDigest.SKEIN_256, 72);
+                data.setServerSessionGenerator(serverRandomGenerator);
+                RandomGenerator ivClientRandomGenerator = new SkeinRandom(clientIVSeed, null, com.continent.engine.skein.SkeinDigest.SKEIN_256, 72);
+                data.setClientIVGenerator(ivClientRandomGenerator);
+                RandomGenerator ivServerRandomGenerator = new SkeinRandom(serverIVSeed, null, com.continent.engine.skein.SkeinDigest.SKEIN_256, 72);
+                data.setServerIVGenerator(ivServerRandomGenerator);
+
+                for (int i = 0; i < 100; i++) {
+                    byte[] sessionId = new byte[SessionId.SIZE];
+                    clientRandomGenerator.nextBytes(sessionId);
+                    byte[] iv = new byte[CryptoService.MAX_IV_SIZE];
+                    ivClientRandomGenerator.nextBytes(iv);
+                    clientSessionIds.put(new SessionId(sessionId), new SessionData(data, iv));
+                }
+
                 String serverCiphersString = HandshakeService.toString(serverCiphers);
                 log.debug("server ciphers: {}", serverCiphersString);
                 String clientCiphersString = HandshakeService.toString(clientCiphers);
@@ -699,13 +760,6 @@ public class HandshakeService {
             }
         }
         return str.toString();
-    }
-
-    private byte[] xor(byte[] b1, byte[] b2) {
-        BitSet b11 = BitSet.valueOf(b1);
-        BitSet b22 = BitSet.valueOf(b2);
-        b11.xor(b22);
-        return b11.toByteArray();
     }
 
     private int readRandomTailLength(byte[] tag) {
@@ -750,38 +804,38 @@ public class HandshakeService {
             return 0;
         }
         
-        byte[] sessionId = xor(clientSecurityCode, serverSecurityCode);
-        
-        log.debug("sessionId\n{}", prettyDump(sessionId));
-        
         String serverCiphersString = toString(serverCiphers);
         log.info("server ciphers: " + serverCiphersString);
         String clientCiphersString = toString(clientCiphers);
         log.info("client ciphers: " + clientCiphersString);
 
-        clientSession = new SessionData(clientKeys, serverKeys, clientCiphers, serverCiphers, sessionId, new byte[] {});
-        
+        clientSession = new SessionData(clientKeys, serverKeys, clientCiphers, serverCiphers, new byte[] {});
+
+        RandomGenerator clientRandomGenerator = new SkeinRandom(clientSecurityCode, null, com.continent.engine.skein.SkeinDigest.SKEIN_256, 72);
+        clientSession.setClientSessionGenerator(clientRandomGenerator);
+        RandomGenerator serverRandomGenerator = new SkeinRandom(serverSecurityCode, null, com.continent.engine.skein.SkeinDigest.SKEIN_256, 72);
+        clientSession.setServerSessionGenerator(serverRandomGenerator);
+        RandomGenerator ivClientRandomGenerator = new SkeinRandom(clientIVSeed, null, com.continent.engine.skein.SkeinDigest.SKEIN_256, 72);
+        clientSession.setClientIVGenerator(ivClientRandomGenerator);
+        RandomGenerator ivServerRandomGenerator = new SkeinRandom(serverIVSeed, null, com.continent.engine.skein.SkeinDigest.SKEIN_256, 72);
+        clientSession.setServerIVGenerator(ivServerRandomGenerator);
+
         handshakeFuture.set(null);
         close(ctx);
         return readRandomTailLength(tag);
     }
-    
-    private int getCypherId(byte[] ciphersId) {
-        int index = toUnsignedInt(ByteBuffer.wrap(ciphersId).getShort()) % combinationsGenerator.countCombinations(3);
-        return index;
-    }
-    
+
     public void close(final ChannelHandlerContext ctx) {
         ctx.executor().schedule(new Runnable() {
             @Override
             public void run() {
                 ctx.close();
             }
-        }, splittableRandom.nextInt(1000), TimeUnit.MILLISECONDS);
+        }, randomDataGenerator.nextInt(1000), TimeUnit.MILLISECONDS);
     }
 
     private byte[] generateKeysData() {
-        byte[] keyData = new byte[MAX_KEYS_DATA_SIZE];
+        byte[] keyData = new byte[CryptoService.MAX_KEYS_DATA_SIZE];
         randomService.getKeyGenerator().nextBytes(keyData);
         return keyData;
     }
@@ -850,12 +904,56 @@ public class HandshakeService {
     private EncryptionPublicKey decryptPublicKey(byte[] iv, byte[] encryptedClientPublicKey) throws IOException {
         StreamCipher bufferedCipher = new CFBBlockCipher(new RC6_256_256Engine(), 16*8);
         bufferedCipher.init(false, new ParametersWithIV(new KeyParameter(encryptionKey), iv));
-        
+
         ByteArrayOutputStream bbos = new ByteArrayOutputStream(ntruPublicKeySize);
         CipherOutputStream os = new CipherOutputStream(bbos, bufferedCipher);
         os.write(encryptedClientPublicKey);
         os.close();
         return new EncryptionPublicKey(bbos.toByteArray());
+    }
+
+    public SessionData getClientSession(byte[] sessionId) {
+        return clientSessionIds.get(new SessionId(sessionId));
+    }
+
+    public boolean checkClientSession(byte[] sessionId) {
+        SessionData data = clientSessionIds.remove(new SessionId(sessionId));
+        if (data == null) {
+            return false;
+        }
+        return true;
+    }
+
+    public SessionData getServerSession(byte[] sessionId) {
+        return serverSessionIds.get(new SessionId(sessionId));
+    }
+
+    public void generateNewClientSessionId(SessionData data) {
+        byte[] id = new byte[SessionId.SIZE];
+        byte[] iv = new byte[CryptoService.MAX_IV_SIZE];
+        data.getLock().lock();
+        data.getClientSessionGenerator().nextBytes(id);
+        data.getClientIVGenerator().nextBytes(iv);
+        data.getLock().unlock();
+        clientSessionIds.put(new SessionId(id), new SessionData(data, iv));
+    }
+
+    public void generateNewServerSessionId() {
+        byte[] id = new byte[SessionId.SIZE];
+        byte[] iv = new byte[CryptoService.MAX_IV_SIZE];
+        clientSession.getLock().lock();
+        clientSession.getServerSessionGenerator().nextBytes(id);
+        clientSession.getServerIVGenerator().nextBytes(iv);
+        clientSession.getLock().unlock();
+        serverSessionIds.put(new SessionId(id), new SessionData(clientSession, iv));
+    }
+
+    public boolean checkServerSession(byte[] sessionId) {
+        SessionData data = serverSessionIds.remove(new SessionId(sessionId));
+        if (data == null) {
+            return false;
+        }
+        return true;
     }
 
     private byte[] calcMac(ByteBuf in, byte[] key) {
@@ -888,7 +986,7 @@ public class HandshakeService {
     private void addRandomTail(ByteBuf output, int randomLength) {
         if (randomLength > 0) {
             for (int i = 0; i < randomLength; ) {
-                for (int rnd = splittableRandom.nextInt(),
+                for (int rnd = randomDataGenerator.nextInt(),
                         n = Math.min(randomLength - i, Integer.SIZE/Byte.SIZE);
                         n-- > 0; rnd >>= Byte.SIZE) {
                     output.writeByte((byte)rnd);
@@ -965,32 +1063,19 @@ public class HandshakeService {
     }
 
     
-    private ListenableFuture<ByteBuf> encryptCipherKeys(final byte[] keysData, final EncryptionPublicKey remotePublicKey,  
-            final byte[] ciphersId, final ChannelHandlerContext ctx, final byte[] serverSecurityCode, final byte[] clientSecurityCode, final byte[] randomTimeouts) {
+    private ListenableFuture<ByteBuf> encryptCipherKeys(final byte[] keysDataJoined, final EncryptionPublicKey remotePublicKey,
+            final ChannelHandlerContext ctx) {
         // executed in separate executorService because NTRU encryption is a long-running task
         return Futures.submitAsync(new AsyncCallable<ByteBuf>() {
             @Override
             public ListenableFuture<ByteBuf> call() throws Exception {
-                byte[] keysDataJoined = join(keysData, ciphersId, serverSecurityCode, clientSecurityCode, randomTimeouts);
-
-                if (log.isDebugEnabled()) {
-                    log.debug("sent uncrypted keys {}\n {}", keysData.length, prettyDump(keysData));
-                    log.debug("sent uncrypted ciphers id {}\n {}", ciphersId.length, prettyDump(ciphersId));
-                    if (serverSecurityCode.length > 0) {
-                        log.debug("sent uncrypted server security code {}\n {}", serverSecurityCode.length, prettyDump(serverSecurityCode));
-                    }
-                    if (clientSecurityCode.length > 0) {
-                        log.debug("sent uncrypted client security code {}\n {}", clientSecurityCode.length, prettyDump(clientSecurityCode));
-                    }
-                }
-
                 ByteBuf result = ctx.alloc().buffer();
-                byte[] encryptedKeys = CryptoService.encryptCipherKeys(keysDataJoined, remotePublicKey, randomService);
+                byte[] encryptedKeys = CryptoService.encryptCipherKeys(keysDataJoined, remotePublicKey, randomService.getKeyGenerator());
                 burn(keysDataJoined);
                 result.writeBytes(encryptedKeys);
 
                 if (log.isDebugEnabled()) {
-                    log.debug("sent encrypted keysData {}\n {}", encryptedKeys.length, ByteBufUtil.prettyHexDump(result));
+                    log.debug("sent encrypted keysData {}\n {}", encryptedKeys.length, prettyDump(encryptedKeys));
                 }
 
                 return Futures.immediateFuture(result);
@@ -1006,5 +1091,5 @@ public class HandshakeService {
     public SessionData getClientSession() {
         return clientSession;
     }
-    
+
 }

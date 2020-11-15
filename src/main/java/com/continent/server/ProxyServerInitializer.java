@@ -15,22 +15,22 @@
  */
 package com.continent.server;
 
-import java.util.Map;
-import java.util.Queue;
-import java.util.Set;
-import java.util.concurrent.ExecutorService;
-
-import com.continent.random.RandomService;
 import com.continent.handler.server.PortUnificationServerHandler;
+import com.continent.random.RandomService;
 import com.continent.service.HandshakeService;
 import com.continent.service.SessionData;
+import com.continent.service.SessionId;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.socket.SocketChannel;
+
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ExecutorService;
 
 public final class ProxyServerInitializer extends ChannelInitializer<SocketChannel> {
     
     private final RandomService randomService;
-    private final Queue<SessionData> sessions;
+    private final Map<SessionId, SessionData> sessions;
     private final Set<String> whiteListedHosts;
     private final ExecutorService executorService;
     private final Map<byte[], byte[]> id2PubKey;
@@ -38,7 +38,7 @@ public final class ProxyServerInitializer extends ChannelInitializer<SocketChann
     private final int delayInMillis;
     private final boolean useRandomPackets;
     
-    public ProxyServerInitializer(RandomService randomService, Queue<SessionData> sessions, Set<String> whiteListedHosts, 
+    public ProxyServerInitializer(RandomService randomService, Map<SessionId, SessionData> sessions, Set<String> whiteListedHosts,
             ExecutorService executorService, Map<byte[], byte[]> id2PubKey, boolean tcpNodelay, int delayInMillis, boolean useRandomPackets) {
         this.randomService = randomService;
         this.sessions = sessions;
@@ -53,6 +53,6 @@ public final class ProxyServerInitializer extends ChannelInitializer<SocketChann
     @Override
     public void initChannel(SocketChannel ch) throws Exception {
         HandshakeService handshakeService = new HandshakeService(executorService, randomService, sessions, id2PubKey);
-        ch.pipeline().addLast(new PortUnificationServerHandler(handshakeService, sessions, randomService, delayInMillis, whiteListedHosts, tcpNodelay, useRandomPackets));
+        ch.pipeline().addLast(new PortUnificationServerHandler(handshakeService, randomService, delayInMillis, whiteListedHosts, tcpNodelay, useRandomPackets));
     }
 }

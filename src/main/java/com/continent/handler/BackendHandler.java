@@ -15,30 +15,26 @@
  */
 package com.continent.handler;
 
-import java.util.concurrent.TimeUnit;
-
-import com.continent.random.XoShiRo256StarStarRandom;
+import com.continent.random.RandomDelegator;
 import io.netty.buffer.Unpooled;
-import io.netty.channel.Channel;
-import io.netty.channel.ChannelFuture;
-import io.netty.channel.ChannelFutureListener;
-import io.netty.channel.ChannelHandlerContext;
-import io.netty.channel.ChannelInboundHandlerAdapter;
+import io.netty.channel.*;
+
+import java.util.concurrent.TimeUnit;
 
 public class BackendHandler extends ChannelInboundHandlerAdapter {
 
     private final Channel inboundChannel;
     private final Integer delayInMillis;
-    private final XoShiRo256StarStarRandom splittableRandom;
+    private final RandomDelegator randomDelegator;
 
     public BackendHandler(Channel inboundChannel) {
         this(null, inboundChannel, 0);
     }
     
-    public BackendHandler(XoShiRo256StarStarRandom splittableRandom, Channel inboundChannel, Integer delayInMillis) {
+    public BackendHandler(RandomDelegator randomDelegator, Channel inboundChannel, Integer delayInMillis) {
         this.inboundChannel = inboundChannel;
         this.delayInMillis = delayInMillis;
-        this.splittableRandom = splittableRandom;
+        this.randomDelegator = randomDelegator;
     }
 
 
@@ -56,7 +52,7 @@ public class BackendHandler extends ChannelInboundHandlerAdapter {
                 public void run() {
                     send(ctx, msg);
                 }
-            }, splittableRandom.nextInt(delayInMillis), TimeUnit.MILLISECONDS);
+            }, randomDelegator.nextInt(delayInMillis), TimeUnit.MILLISECONDS);
         } else {
             send(ctx, msg);
         }

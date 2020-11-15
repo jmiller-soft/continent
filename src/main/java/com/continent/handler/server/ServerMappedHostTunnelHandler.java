@@ -17,16 +17,10 @@ package com.continent.handler.server;
 
 import com.continent.handler.BackendHandler;
 import com.continent.handler.RandomPacketHandler;
-import com.continent.random.XoShiRo256StarStarRandom;
+import com.continent.random.RandomDelegator;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.Unpooled;
-import io.netty.channel.Channel;
-import io.netty.channel.ChannelFuture;
-import io.netty.channel.ChannelFutureListener;
-import io.netty.channel.ChannelHandlerContext;
-import io.netty.channel.ChannelInboundHandlerAdapter;
-import io.netty.channel.ChannelInitializer;
-import io.netty.channel.ChannelOption;
+import io.netty.channel.*;
 import io.netty.util.concurrent.Promise;
 
 public class ServerMappedHostTunnelHandler extends ChannelInboundHandlerAdapter {
@@ -39,15 +33,15 @@ public class ServerMappedHostTunnelHandler extends ChannelInboundHandlerAdapter 
     // the outboundChannel will use the same EventLoop (and therefore Thread) as the inboundChannel.
     private Channel outboundChannel;    
     private final Promise<Channel> promise;
-    private final XoShiRo256StarStarRandom splittableRandom;
+    private final RandomDelegator randomGenerator;
     private final boolean useRandomPackets;
 
-    public ServerMappedHostTunnelHandler(String remoteHost, int remotePort, Promise<Channel> promise, XoShiRo256StarStarRandom splittableRandom, int delayInMillis, boolean useRandomPackets) {
+    public ServerMappedHostTunnelHandler(String remoteHost, int remotePort, Promise<Channel> promise, RandomDelegator randomGenerator, int delayInMillis, boolean useRandomPackets) {
         this.remoteHost = remoteHost;
         this.remotePort = remotePort;
         this.promise = promise;
         this.delayInMillis = delayInMillis;
-        this.splittableRandom = splittableRandom;
+        this.randomGenerator = randomGenerator;
         this.useRandomPackets = useRandomPackets;
     }
     
@@ -65,9 +59,9 @@ public class ServerMappedHostTunnelHandler extends ChannelInboundHandlerAdapter 
 //                 ch.pipeline().addFirst(new LoggingHandler("uncrypted backend", LogLevel.INFO));
                  
                  if (useRandomPackets) {
-                     ch.pipeline().addLast(new RandomPacketHandler(splittableRandom, inboundChannel));
+                     ch.pipeline().addLast(new RandomPacketHandler(randomGenerator, inboundChannel));
                  }
-                 ch.pipeline().addLast(new BackendHandler(splittableRandom, inboundChannel, delayInMillis));
+                 ch.pipeline().addLast(new BackendHandler(randomGenerator, inboundChannel, delayInMillis));
                  ch.pipeline().addLast(new ConnectionHandler(promise));
              }
          })

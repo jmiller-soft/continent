@@ -1,7 +1,11 @@
 package com.continent.handler;
 
+import java.io.IOException;
 import java.util.List;
 
+import com.continent.service.Protocol;
+import io.netty.buffer.ByteBufInputStream;
+import io.netty.buffer.ByteBufOutputStream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -19,8 +23,8 @@ public class CipherDecoderHandler extends ByteToMessageDecoder {
     private int skipBytes;
     private int readNextBytes;
     
-    public CipherDecoderHandler(CryptoService holder) {
-        this.holder = holder;
+    public CipherDecoderHandler(CryptoService cryptoService) {
+        this.holder = cryptoService;
     }
     
     @Override
@@ -43,7 +47,7 @@ public class CipherDecoderHandler extends ByteToMessageDecoder {
         decrypt(ctx, input, out);
     }
 
-    protected void decrypt(ChannelHandlerContext ctx, ByteBuf input, List<Object> out) {
+    protected void decrypt(ChannelHandlerContext ctx, ByteBuf input, List<Object> out) throws IOException {
         ByteBuf output = null;
         
         if (readNextBytes > 0) {
@@ -51,15 +55,15 @@ public class CipherDecoderHandler extends ByteToMessageDecoder {
             readNextBytes = readNextBytes - readBytes;
             
             output = ctx.alloc().buffer(readBytes);
-            holder.decrypt(output, input, readBytes);
+            holder.decrypt(new ByteBufOutputStream(output), new ByteBufInputStream(input), readBytes);
         } else {
             input.markReaderIndex();
-            if (input.readableBytes() < CryptoService.DATA_LENGTH_SIZE + CryptoService.RANDOM_DATA_LENGTH_SIZE) {
+            if (input.readableBytes() < Protocol.DATA_LENGTH_SIZE + Protocol.RANDOM_DATA_LENGTH_SIZE) {
                 return;
             }
             output = ctx.alloc().buffer(input.readableBytes());
             
-            holder.decrypt(output, input, CryptoService.DATA_LENGTH_SIZE + CryptoService.RANDOM_DATA_LENGTH_SIZE);
+            holder.decrypt(new ByteBufOutputStream(output), new ByteBufInputStream(input), Protocol.DATA_LENGTH_SIZE + Protocol.RANDOM_DATA_LENGTH_SIZE);
             
             if (!decrypt(ctx, input, output)) {
                 return;
@@ -68,7 +72,7 @@ public class CipherDecoderHandler extends ByteToMessageDecoder {
         out.add(output);
     }
 
-    protected boolean decrypt(ChannelHandlerContext ctx, ByteBuf input, ByteBuf output) {
+    protected boolean decrypt(ChannelHandlerContext ctx, ByteBuf input, ByteBuf output) throws IOException {
         int packetLength = output.readInt();
         if (packetLength < 0 || packetLength > 66000) {
             log.error("packetLength has wrong value: {}, channel: {}", packetLength, ctx.channel());
@@ -88,7 +92,7 @@ public class CipherDecoderHandler extends ByteToMessageDecoder {
             packetLength = input.readableBytes();
         }
 
-        holder.decrypt(output, input, packetLength);
+        holder.decrypt(new ByteBufOutputStream(output), new ByteBufInputStream(input), packetLength);
 
         int skippedBytes = Math.min(randomLength, input.readableBytes());
         input.skipBytes(skippedBytes);

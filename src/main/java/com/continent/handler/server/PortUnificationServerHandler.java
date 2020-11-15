@@ -1,20 +1,10 @@
 package com.continent.handler.server;
 
-import java.security.cert.CertificateException;
-import java.util.Arrays;
-import java.util.List;
-import java.util.Queue;
-import java.util.Set;
-import java.util.concurrent.Future;
-import java.util.concurrent.TimeUnit;
-
 import com.continent.handler.HandshakePacketSplitter;
 import com.continent.random.RandomService;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
+import com.continent.service.CryptoService;
 import com.continent.service.HandshakeService;
-import com.continent.service.SessionData;
+import com.continent.service.SessionId;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.handler.codec.ByteToMessageDecoder;
@@ -26,6 +16,15 @@ import io.netty.handler.ssl.SslContext;
 import io.netty.handler.ssl.SslContextBuilder;
 import io.netty.handler.ssl.SslHandler;
 import io.netty.handler.ssl.util.SelfSignedCertificate;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.security.cert.CertificateException;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Set;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 public class PortUnificationServerHandler extends ByteToMessageDecoder {
 
@@ -36,8 +35,6 @@ public class PortUnificationServerHandler extends ByteToMessageDecoder {
     private Future<?> closeChannelFuture;
     
     private final RandomService randomService;
-    
-    private final Queue<SessionData> sessions;
     
     private int delayInMillis;
 
@@ -54,10 +51,8 @@ public class PortUnificationServerHandler extends ByteToMessageDecoder {
         }
     }
     
-    public PortUnificationServerHandler(HandshakeService handshakeService, Queue<SessionData> sessions, 
-            RandomService randomService, int delayInMillis, Set<String> whiteListedHosts, boolean tcpNodelay, boolean useRandomPackets) {
+    public PortUnificationServerHandler(HandshakeService handshakeService, RandomService randomService, int delayInMillis, Set<String> whiteListedHosts, boolean tcpNodelay, boolean useRandomPackets) {
         this.handshakeService = handshakeService;
-        this.sessions = sessions;
         this.randomService = randomService;
         this.delayInMillis = delayInMillis;
         this.whiteListedHosts = whiteListedHosts;
@@ -80,23 +75,31 @@ public class PortUnificationServerHandler extends ByteToMessageDecoder {
     
     @Override
     protected void decode(ChannelHandlerContext ctx, ByteBuf in, List<Object> out) throws Exception {
-        if (in.readableBytes() < 5) {
+        if (in.readableBytes() < SessionId.SIZE) {
             return;
         }
-        
-        boolean useSsl = SslHandler.isEncrypted(in);
-        if (useSsl) {
-            ApplicationProtocolConfig apn = new ApplicationProtocolConfig(
-                    Protocol.ALPN, SelectorFailureBehavior.CHOOSE_MY_LAST_PROTOCOL,
-                    SelectedListenerFailureBehavior.ACCEPT, Arrays.asList("http/1.1"));
-            SslContext sslCtx = SslContextBuilder
-                                    .forServer(ssc.certificate(), ssc.privateKey())
-                                    .applicationProtocolConfig(apn)
-                                    .build();
-            ctx.pipeline().addLast("sslHandler", sslCtx.newHandler(ctx.alloc()));
+
+        in.markReaderIndex();
+        byte[] sessionId = new byte[SessionId.SIZE];
+        in.readBytes(sessionId);
+        in.resetReaderIndex();
+
+        boolean useSsl = false;
+        if (handshakeService.getClientSession(sessionId) == null) {
+            useSsl = SslHandler.isEncrypted(in);
+            if (useSsl) {
+                ApplicationProtocolConfig apn = new ApplicationProtocolConfig(
+                        Protocol.ALPN, SelectorFailureBehavior.CHOOSE_MY_LAST_PROTOCOL,
+                        SelectedListenerFailureBehavior.ACCEPT, Arrays.asList("http/1.1"));
+                SslContext sslCtx = SslContextBuilder
+                        .forServer(ssc.certificate(), ssc.privateKey())
+                        .applicationProtocolConfig(apn)
+                        .build();
+                ctx.pipeline().addLast("sslHandler", sslCtx.newHandler(ctx.alloc()));
+            }
         }
-        
-        ctx.pipeline().addLast(new ServerFirstPacketDecoder(handshakeService, sessions, randomService, useSsl, 
+
+        ctx.pipeline().addLast(new ServerFirstPacketDecoder(handshakeService, randomService, useSsl,
                 delayInMillis, whiteListedHosts, tcpNodelay, useRandomPackets, closeChannelFuture));
         ctx.pipeline().addLast(new HandshakePacketSplitter(randomService));
         ctx.pipeline().remove(this);

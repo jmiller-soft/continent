@@ -3,6 +3,7 @@ package com.continent.service;
 import org.bouncycastle.crypto.BlockCipher;
 import org.bouncycastle.crypto.StreamCipher;
 
+import java.nio.ByteBuffer;
 import java.util.*;
 
 public class CombinationsGenerator {
@@ -31,15 +32,29 @@ public class CombinationsGenerator {
         }
         return combinations;
     }
-    
-    public int countCombinations(int ciphersAmount) {
+
+    private int getCypherIndex(byte[] ciphersId, int ciphersAmount) {
+        int index = toUnsignedInt(ByteBuffer.wrap(ciphersId).getShort()) % countCombinations(ciphersAmount);
+        return index;
+    }
+
+    private static int toUnsignedInt(short x) {
+        return ((int) x) & 0xffff;
+    }
+
+    private int countCombinations(int ciphersAmount) {
         List<Object> attempt = new ArrayList<>();
         List<List<Object>> combinations = new ArrayList<>();
         possibleCiphers(ciphersAmount, CIPHERS, attempt, combinations, false);
         return combinations.size();
     }
-    
-    public List<Object> getCiphers(int index, int ciphersAmount) {
+
+    public List<Object> getCiphers(byte[] ciphersId, int ciphersAmount) {
+        int index = getCypherIndex(ciphersId, ciphersAmount);
+        return getCiphers(index, ciphersAmount);
+    }
+
+    private List<Object> getCiphers(int index, int ciphersAmount) {
         List<Object> attempt = new ArrayList<>();
         List<List<Object>> combinations = new ArrayList<>();
         possibleCiphers(ciphersAmount, CIPHERS, attempt, combinations, false);

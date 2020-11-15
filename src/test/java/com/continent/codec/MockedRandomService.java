@@ -25,7 +25,7 @@ public class MockedRandomService {
             }
         };
         
-        return new RandomService();
+        return new RandomService(0, 0);
     }
     
 }

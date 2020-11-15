@@ -15,6 +15,20 @@
  */
 package com.continent.server;
 
+import com.continent.random.RandomService;
+import com.continent.service.SessionData;
+import com.continent.service.SessionId;
+import com.google.common.io.BaseEncoding;
+import io.netty.bootstrap.ServerBootstrap;
+import io.netty.channel.ChannelOption;
+import io.netty.channel.EventLoopGroup;
+import io.netty.channel.nio.NioEventLoopGroup;
+import io.netty.channel.socket.nio.NioServerSocketChannel;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.yaml.snakeyaml.Yaml;
+import org.yaml.snakeyaml.constructor.Constructor;
+
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
@@ -23,26 +37,10 @@ import java.nio.file.Paths;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
-import java.util.Queue;
-import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
-
-import com.continent.random.RandomService;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.yaml.snakeyaml.Yaml;
-import org.yaml.snakeyaml.constructor.Constructor;
-
-import com.google.common.io.BaseEncoding;
-
-import com.continent.service.SessionData;
-import io.netty.bootstrap.ServerBootstrap;
-import io.netty.channel.ChannelOption;
-import io.netty.channel.EventLoopGroup;
-import io.netty.channel.nio.NioEventLoopGroup;
-import io.netty.channel.socket.nio.NioServerSocketChannel;
 
 public final class ProxyServer {
 
@@ -53,7 +51,7 @@ public final class ProxyServer {
         Path settingsPath = Paths.get("").toAbsolutePath().resolve(configFile);
 
         Yaml yaml = new Yaml(new Constructor(ServerConfig.class));
-        ServerConfig config;
+        final ServerConfig config;
         try (InputStream is = Files.newInputStream(settingsPath)) {
             config = yaml.load(is);
         }
@@ -69,25 +67,33 @@ public final class ProxyServer {
         if (id2PubKey.isEmpty()) {
             throw new IllegalStateException("Client keys are not defined!");
         }
+
+        if (config.getSessionTimeout() == 0) {
+            config.setSessionTimeout(TimeUnit.HOURS.toSeconds(3));
+        }
         
-        RandomService randomService = new RandomService();
+        RandomService randomService = new RandomService(config.getNonceSeedInterval(), config.getKeySeedInterval());
 
         ExecutorService executor = Executors.newFixedThreadPool(1);
         EventLoopGroup bossGroup = new NioEventLoopGroup(1);
         EventLoopGroup workerGroup = new NioEventLoopGroup();
         
-        final Queue<SessionData> sessions = new ConcurrentLinkedQueue<>();
+        final Map<SessionId, SessionData> sessions = new ConcurrentHashMap<SessionId, SessionData>();
         workerGroup.scheduleWithFixedDelay(new Runnable() {
             @Override
             public void run() {
-                for (Iterator<SessionData> iterator = sessions.iterator(); iterator.hasNext();) {
+                boolean removed = false;
+                for (Iterator<SessionData> iterator = sessions.values().iterator(); iterator.hasNext();) {
                     SessionData sessionData = iterator.next();
-                    if (System.currentTimeMillis() - sessionData.getLastAccessTime() > TimeUnit.HOURS.toMillis(1)
+                    if (System.currentTimeMillis() - sessionData.getLastAccessTime() > TimeUnit.SECONDS.toMillis(config.getSessionTimeout())
                             && sessionData.getUsage() == 0) {
                         iterator.remove();
-                        log.info("Session removed {}. Sessions remain: {}", sessionData.countSessionsMacs(), sessions.size());
                         sessionData.clear();
+                        removed = true;
                     }
+                }
+                if (removed) {
+                    log.info("Sessions remain: {}", sessions.size());
                 }
             }
         }, 1, 1, TimeUnit.MINUTES);

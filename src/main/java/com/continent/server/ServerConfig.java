@@ -12,7 +12,31 @@ public class ServerConfig {
     int maxWriteDelayMs;
     boolean useRandomPackets;
     Collection<String> keys;
-    
+    int nonceSeedInterval;
+    int keySeedInterval;
+    long sessionTimeout;
+
+    public long getSessionTimeout() {
+        return sessionTimeout;
+    }
+    public void setSessionTimeout(long sessionTimeout) {
+        this.sessionTimeout = sessionTimeout;
+    }
+
+    public int getNonceSeedInterval() {
+        return nonceSeedInterval;
+    }
+    public void setNonceSeedInterval(int nonceSeedInterval) {
+        this.nonceSeedInterval = nonceSeedInterval;
+    }
+
+    public Integer getKeySeedInterval() {
+        return keySeedInterval;
+    }
+    public void setKeySeedInterval(Integer keySeedInterval) {
+        this.keySeedInterval = keySeedInterval;
+    }
+
     public void setPort(int port) {
         this.port = port;
     }

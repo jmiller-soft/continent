@@ -13,13 +13,13 @@ public class ProgressInputStream extends FilterInputStream {
     private final long totalSize;
     private long readSize;
     private final boolean encryption;
-    private final List<Object> ciphers;
+    private final String cipher;
 
-    public ProgressInputStream(long totalSize, boolean encryption, List<Object> ciphers) {
+    public ProgressInputStream(long totalSize, boolean encryption, String cipher) {
         super(null);
         this.totalSize = totalSize;
         this.encryption = encryption;
-        this.ciphers = ciphers;
+        this.cipher = cipher;
     }
 
     public void updateInput(InputStream in) {
@@ -37,23 +37,10 @@ public class ProgressInputStream extends FilterInputStream {
         readSize += result;
         int progress = (int) (((double)readSize * 100) / totalSize);
 
-        StringBuilder s = new StringBuilder();
-        for (Object cipher : ciphers) {
-            if (cipher instanceof Class) {
-                s.append(((Class)cipher).getSimpleName() + ", ");
-            }
-            if (cipher instanceof BlockCipher) {
-                s.append(((BlockCipher)cipher).getAlgorithmName() + ", ");
-            }
-            if (cipher instanceof StreamCipher) {
-                s.append(((StreamCipher)cipher).getAlgorithmName() + ", ");
-            }
-        }
-
         if (encryption) {
-            System.out.print("\rEncrypting (" + s + ") - " + progress + "%");
+            System.out.print("\rEncrypting (" + cipher + ") - " + progress + "%");
         } else {
-            System.out.print("\rDecrypting (" + s + ") - " + progress + "%");
+            System.out.print("\rDecrypting (" + cipher + ") - " + progress + "%");
         }
         return result;
     }

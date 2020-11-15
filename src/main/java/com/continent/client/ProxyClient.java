@@ -15,11 +15,26 @@
  */
 package com.continent.client;
 
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileNotFoundException;
-import java.io.IOException;
-import java.io.InputStream;
+import com.continent.random.RandomService;
+import com.continent.random.entropy.EntropySource;
+import com.continent.random.entropy.NativeJitterEntropy;
+import com.continent.service.HandshakeService;
+import com.google.common.util.concurrent.*;
+import io.netty.bootstrap.ServerBootstrap;
+import io.netty.channel.ChannelFuture;
+import io.netty.channel.ChannelFutureListener;
+import io.netty.channel.ChannelOption;
+import io.netty.channel.EventLoopGroup;
+import io.netty.channel.group.ChannelGroup;
+import io.netty.channel.group.DefaultChannelGroup;
+import io.netty.channel.nio.NioEventLoopGroup;
+import io.netty.channel.socket.nio.NioServerSocketChannel;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.yaml.snakeyaml.Yaml;
+import org.yaml.snakeyaml.constructor.Constructor;
+
+import java.io.*;
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.List;
@@ -30,31 +45,6 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.yaml.snakeyaml.Yaml;
-import org.yaml.snakeyaml.constructor.Constructor;
-
-import com.google.common.util.concurrent.FutureCallback;
-import com.google.common.util.concurrent.Futures;
-import com.google.common.util.concurrent.ListenableFuture;
-import com.google.common.util.concurrent.MoreExecutors;
-import com.google.common.util.concurrent.SettableFuture;
-
-import com.continent.random.RandomService;
-import com.continent.random.entropy.EntropySource;
-import com.continent.random.entropy.JitterEntropy;
-import com.continent.service.HandshakeService;
-import io.netty.bootstrap.ServerBootstrap;
-import io.netty.channel.ChannelFuture;
-import io.netty.channel.ChannelFutureListener;
-import io.netty.channel.ChannelOption;
-import io.netty.channel.EventLoopGroup;
-import io.netty.channel.group.ChannelGroup;
-import io.netty.channel.group.DefaultChannelGroup;
-import io.netty.channel.nio.NioEventLoopGroup;
-import io.netty.channel.socket.nio.NioServerSocketChannel;
-
 public final class ProxyClient {
 
     private static final Logger log = LoggerFactory.getLogger(ProxyClient.class);
@@ -62,13 +52,14 @@ public final class ProxyClient {
     private EventLoopGroup bossGroup;
     private EventLoopGroup workerGroup;
 
-    private HandshakeService handshakeService;
+    private volatile RandomService randomService;
+    private volatile HandshakeService handshakeService;
     
     public ProxyClient() {
     }
     
     public void init(File file) throws FileNotFoundException, InterruptedException, ExecutionException {
-        ListenableFuture<Void> future = init(new FileInputStream(file), new JitterEntropy(), new JitterEntropy());
+        ListenableFuture<Void> future = init(new FileInputStream(file));
         future.get();
         
         Thread.sleep(Long.MAX_VALUE);
@@ -79,11 +70,15 @@ public final class ProxyClient {
                 && handshakeService.getClientSession() != null) {
             handshakeService.getClientSession().clear();
         }
+        if (randomService != null) {
+            randomService.shutdown();
+        }
+
         bossGroup.shutdownGracefully();
         workerGroup.shutdownGracefully();
     }
-    
-    public ListenableFuture<Void> init(InputStream settingStream, EntropySource keySeedSource, EntropySource nonceSeedSource) {
+
+    public ListenableFuture<Void> init(InputStream settingStream) {
         Yaml yaml = new Yaml(new Constructor(ClientConfig.class));
         final ClientConfig config;
         
@@ -97,10 +92,10 @@ public final class ProxyClient {
             }
         }
 
-        return init(config, keySeedSource, nonceSeedSource);
+        return init(config);
     }
 
-    public ListenableFuture<Void> init(final ClientConfig config, final EntropySource keySeedSource, final EntropySource nonceSeedSource) {
+    public ListenableFuture<Void> init(final ClientConfig config) {
         if (config.getKey() == null) {
             throw new IllegalStateException("Client key is not defined!");
         }
@@ -129,7 +124,7 @@ public final class ProxyClient {
         executor.execute(new Runnable() {
             @Override
             public void run() {
-                final RandomService randomService = new RandomService(keySeedSource, nonceSeedSource);
+                randomService = new RandomService(config.getNonceSeedInterval(), config.getKeySeedInterval());
                 handshakeService = new HandshakeService(executor, randomService, workerGroup, config.getKey(), urls, group);
 
                 ListenableFuture<Void> future = handshakeService.connect();
@@ -137,19 +132,7 @@ public final class ProxyClient {
                     @Override
                     public void onSuccess(Void res) {
                         if (config.getKeyRotationInterval() != null) {
-                            String[] parts = config.getKeyRotationInterval().split(":");
-                            int interval = Integer.valueOf(parts[0]);
-                            if (parts.length > 1) {
-                                int diff = Integer.valueOf(parts[1]) - Integer.valueOf(parts[0]);
-                                interval = Integer.valueOf(parts[0]) + randomService.getNonceGenerator().nextInt(diff);
-                            }
-
-                            workerGroup.scheduleWithFixedDelay(new Runnable() {
-                                @Override
-                                public void run() {
-                                    handshakeService.connect();
-                                }
-                            }, interval, interval, TimeUnit.SECONDS);
+                            scheduleReHandshake(config);
                         }
 
                         final AtomicInteger counter = new AtomicInteger(1);
@@ -217,6 +200,23 @@ public final class ProxyClient {
 
 
         return result;
+    }
+
+    private void scheduleReHandshake(final ClientConfig config) {
+        String[] parts = config.getKeyRotationInterval().split(":");
+        int interval = Integer.valueOf(parts[0]);
+        if (parts.length > 1) {
+            int diff = Integer.valueOf(parts[1]) - Integer.valueOf(parts[0]);
+            interval = Integer.valueOf(parts[0]) + randomService.getNonceGenerator().nextInt(diff);
+        }
+
+        workerGroup.schedule(new Runnable() {
+            @Override
+            public void run() {
+                handshakeService.connect();
+                scheduleReHandshake(config);
+            }
+        }, interval, TimeUnit.SECONDS);
     }
 
     public static void main(String[] args) throws Exception {

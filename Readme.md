@@ -2,9 +2,12 @@
 
 ## Use cases
 
-* TCP protocol hiding (SSH, SMTP, IMAP ...) through port tunneling  
-* Web browsing and WebRTC session hiding through local Socks5 proxy  
-* Files encryption with password or NTRU public key  
+* Encryption of TCP protocol (SSH, SMTP, IMAP ...) through port tunneling  
+* Encryption of Web browsing and WebRTC session through local Socks5 proxy  
+
+* Files encryption with one-time pad  
+* Files encryption with password  
+* Files encryption with NTRU public and private keys  
 
 ## Usage examples
 
@@ -12,29 +15,36 @@
 
 [How to use Continent VPN with Email client](vpn-email-client-example.md)  
 
-[How to use Continent file container](container-example.md)  
+[How to use Continent file container with password](container-password.md)  
 
-## VPN Features
+[How to use Continent file container with public and private keys](container-ntru.md)  
 
-* Exposes local Socks5 proxy  
-* Port tunneling  
+[How to use Continent file container with one-time pad](container-otp.md)  
+
+## VPN features
+
+* VPN client exposes local Socks5 proxy  
+* VPN client supports port tunneling  
 
 * Deep Packet Inspection (DPI) resistant protocol: handshake and traffic is computationally indistinguishable from random data  
 * Polymorphic protocol: random packet length, inter-arrival time and packets generation (noise)  
 * Protocol masking: encrypted traffic can be wrapped up into HTTPS protocol to bypass some firewalls  
 * Forward secrecy property  
-* Replay attack protection (one-time MAC per connection)  
 * Low memory consumption: client - 32Mb, server - 256Mb  
 * Cascade encryption scheme of 3 randomly selected ciphers.  
 * Overall key size range is from 768 to 3328 bits.  
-* Key exchange encryption cipher: 256-bit [NTRU](https://github.com/tbuktu/ntru)  
+* Key exchange encryption cipher: 256-bit [NTRU](https://github.com/tbuktu/ntru) based on Skein-512  
+
+## Container features
+
+* One-time pad derived from Skein PRNG continuously seeded with Hardware RNG values  
+* Password derived from Skein PRNG or Lyra2  
 
 ## Crypto engine features
 
 * High-quality entropy gathered from [Hardware RNG based on CPU timing jitter](http://www.chronox.de/jent.html)  
-* Independent random generators for Nonce and Key:  
-  * Fortuna algorithm based on Skein-256 and randomly selected RC6 / CAST6 / Twofish cipher  
-  * Seeded every second  
+* Independent Skein PRNG based random generators for Nonce and Key  
+* Random generators are seeded every second  
 
 * Encryption ciphers used in cascade encryption scheme:  
 

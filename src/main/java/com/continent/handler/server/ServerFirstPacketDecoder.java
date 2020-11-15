@@ -1,35 +1,21 @@
 package com.continent.handler.server;
 
-import java.net.URI;
-import java.nio.ByteBuffer;
-import java.nio.charset.StandardCharsets;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.List;
-import java.util.Queue;
-import java.util.Set;
-import java.util.concurrent.Future;
-
 import com.continent.handler.CipherDecoderHandler;
 import com.continent.handler.HandshakePacketSplitter;
 import com.continent.handler.client.CipherClientEncoderHandler;
+import com.continent.random.RandomDelegator;
 import com.continent.random.RandomService;
-import com.continent.random.XoShiRo256StarStarRandom;
 import com.continent.server.SocksServerHandler;
-import io.netty.buffer.ByteBufUtil;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
+import com.continent.service.*;
 import com.google.common.base.Function;
 import com.google.common.util.concurrent.FutureCallback;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.MoreExecutors;
-
-import com.continent.service.CryptoService;
-import com.continent.service.HandshakeService;
-import com.continent.service.SessionData;
 import io.netty.buffer.ByteBuf;
+import io.netty.buffer.ByteBufInputStream;
+import io.netty.buffer.ByteBufOutputStream;
+import io.netty.buffer.ByteBufUtil;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelFutureListener;
@@ -37,6 +23,14 @@ import io.netty.channel.ChannelHandlerContext;
 import io.netty.handler.codec.ByteToMessageDecoder;
 import io.netty.handler.codec.socksx.SocksPortUnificationServerHandler;
 import io.netty.util.concurrent.Promise;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.net.URI;
+import java.nio.charset.StandardCharsets;
+import java.util.List;
+import java.util.Set;
+import java.util.concurrent.Future;
 
 public class ServerFirstPacketDecoder extends ByteToMessageDecoder {
 
@@ -47,11 +41,9 @@ public class ServerFirstPacketDecoder extends ByteToMessageDecoder {
     private final RandomService randomService;
     
     private State state = State.DATA;
-    private final Collection<SessionData> sessions;
-    
+
     private int skipBytes;
     private Future<?> closeChannelFuture;
-    private SessionData currentSessionData;
 
     private boolean useSSL;
     private int delayInMillis;
@@ -61,12 +53,11 @@ public class ServerFirstPacketDecoder extends ByteToMessageDecoder {
     private boolean tcpNodelay;
     private boolean useRandomPackets;
     
-    public ServerFirstPacketDecoder(HandshakeService handshakeService, Queue<SessionData> sessions, 
+    public ServerFirstPacketDecoder(HandshakeService handshakeService,
             RandomService randomService, boolean useSSL, int delayInMillis, Set<String> whiteListedHosts, boolean tcpNodelay, boolean useRandomPackets,
             Future<?> closeChannelFuture) {
         this.useSSL = useSSL;
         this.handshakeService = handshakeService;
-        this.sessions = sessions;
         this.randomService = randomService;
         this.delayInMillis = delayInMillis;
         this.whiteListedHosts = whiteListedHosts;
@@ -97,46 +88,41 @@ public class ServerFirstPacketDecoder extends ByteToMessageDecoder {
         }
         
         if (state == State.DATA) {
-            if (in.readableBytes() < CryptoService.MAX_IV_SIZE + CryptoService.MAC_ID_SIZE + CryptoService.TUNNEL_TYPE_SIZE + CryptoService.DATA_LENGTH_SIZE + CryptoService.RANDOM_DATA_LENGTH_SIZE) {
+            if (in.readableBytes() < SessionId.SIZE + Protocol.TUNNEL_TYPE_SIZE + Protocol.DATA_LENGTH_SIZE + Protocol.RANDOM_DATA_LENGTH_SIZE) {
                 return;
             }
             in.markReaderIndex();
-            
+
             closeChannelFuture.cancel(false);
-            
-            Collection<SessionData> userSessions = sessions;
-            if (currentSessionData != null) {
-                userSessions = Collections.singleton(currentSessionData);
-            }
-            
-            for (final SessionData sessionData : userSessions) {
-                in.resetReaderIndex();
+
+            byte[] sessionId = new byte[SessionId.SIZE];
+            in.readBytes(sessionId);
+
+            final SessionData sessionData = handshakeService.getClientSession(sessionId);
+            if (sessionData != null) {
+                final CryptoService cryptoService = new CryptoService();
+
+                byte[] iv = new byte[CryptoService.MAX_IV_SIZE];
+                byte[] newSessionId = new byte[SessionId.SIZE];
+
+                sessionData.getLock().lock();
+                sessionData.getServerSessionGenerator().nextBytes(newSessionId);
+                sessionData.getServerIVGenerator().nextBytes(iv);
+                sessionData.getLock().unlock();
+
+                handshakeService.generateNewClientSessionId(sessionData);
+
+                cryptoService.setEncoderCiphers(sessionData.getServerCiphers(), sessionData.getServerKey(), iv);
+                cryptoService.setDecoderCiphers(sessionData.getClientCiphers(), sessionData.getIvData(), sessionData.getClientKey());
                 
-                CryptoService holder = new CryptoService();
-                byte[] sessionMac = holder.checkSessionMac(in, sessionData.getSessionId());
-                if (sessionMac == null) {
-                    continue;
-                }
-                
-                in.resetReaderIndex();
-                
-                currentSessionData = sessionData;
-                
-                byte[] ivData = new byte[CryptoService.MAX_IV_SIZE];
-                in.readBytes(ivData);
-                in.skipBytes(CryptoService.MAC_ID_SIZE);
-                
-                holder.setEncoderCiphers(sessionData.getServerCiphers(), randomService, sessionData.getServerKey());
-                holder.setDecoderCiphers(sessionData.getClientCiphers(), ivData, sessionData.getClientKey());
-                
-                ByteBuf tunnel = ctx.alloc().buffer(1);
-                holder.decrypt(tunnel, in, 1);
+                ByteBuf tunnel = ctx.alloc().buffer(Protocol.TUNNEL_TYPE_SIZE);
+                cryptoService.decrypt(new ByteBufOutputStream(tunnel), new ByteBufInputStream(in), Protocol.TUNNEL_TYPE_SIZE);
 
                 byte tunnelType = tunnel.readByte();
                 tunnel.release();
 
-                XoShiRo256StarStarRandom splittableRandom = new XoShiRo256StarStarRandom(randomService.getNonceGenerator().nextLong());
-                
+                RandomDelegator randomGenerator = randomService.createRandomDataGenerator();
+
                 if (tunnelType == CipherClientEncoderHandler.SOCKS5_TUNNEL) {
                     
                     ctx.pipeline().remove(HandshakePacketSplitter.class);
@@ -144,14 +130,14 @@ public class ServerFirstPacketDecoder extends ByteToMessageDecoder {
                     
                     ctx.pipeline().addLast(
                             new SocksPortUnificationServerHandler(),
-                            new SocksServerHandler(splittableRandom, whiteListedHosts, tcpNodelay, delayInMillis,
+                            new SocksServerHandler(randomGenerator, whiteListedHosts, tcpNodelay, delayInMillis,
                                     sessionData.getRandomTimeouts())
                             );
                     
                 } else if (tunnelType == CipherClientEncoderHandler.PORT_MAPPING_TUNNEL) {
                     
                     ByteBuf addressLen = ctx.alloc().buffer(1);
-                    holder.decrypt(addressLen, in, 1);
+                    cryptoService.decrypt(new ByteBufOutputStream(addressLen), new ByteBufInputStream(in), 1);
                     byte addressLength = addressLen.readByte();
                     addressLen.release();
                     
@@ -161,7 +147,7 @@ public class ServerFirstPacketDecoder extends ByteToMessageDecoder {
                     }
                     
                     ByteBuf address = ctx.alloc().buffer(addressLength);
-                    holder.decrypt(address, in, addressLength);
+                    cryptoService.decrypt(new ByteBufOutputStream(address), new ByteBufInputStream(in), addressLength);
 
                     String addr = address.toString(StandardCharsets.UTF_8);
                     address.release();
@@ -172,7 +158,7 @@ public class ServerFirstPacketDecoder extends ByteToMessageDecoder {
                     
                     Promise<Channel> connectionPromise = ctx.executor().newPromise();
                     ctx.pipeline().addLast(new ServerMappedHostHandshakeHandler(connectionPromise));
-                    ctx.pipeline().addLast(new ServerMappedHostTunnelHandler(hostAddr.getHost(), hostAddr.getPort(), connectionPromise, splittableRandom, delayInMillis, useRandomPackets));
+                    ctx.pipeline().addLast(new ServerMappedHostTunnelHandler(hostAddr.getHost(), hostAddr.getPort(), connectionPromise, randomGenerator, delayInMillis, useRandomPackets));
                     
                 } else {
                     handshakeService.close(ctx);
@@ -180,13 +166,11 @@ public class ServerFirstPacketDecoder extends ByteToMessageDecoder {
                     return;
                 }
 
-                long tagId = ByteBuffer.wrap(sessionMac).getLong();
-                if (!sessionData.addSessionMac(tagId)) {
+                if (!handshakeService.checkClientSession(sessionId)) {
                     handshakeService.close(ctx);
                     log.error("Already received message was received again. Someone is probing this server." +
-                                    " Session Mac: {}, Channel: {}, Authenticated macs: {}, Session: {}. Closing this channel!",
-                            ByteBufUtil.hexDump(sessionMac), ctx.channel(), sessionData.countSessionsMacs(),
-                            ByteBufUtil.hexDump(sessionData.getSessionId()));
+                                    " Channel: {}, Session: {}. Closing this channel!",
+                            ctx.channel(), ByteBufUtil.hexDump(sessionId));
                     return;
                 }
 
@@ -196,13 +180,13 @@ public class ServerFirstPacketDecoder extends ByteToMessageDecoder {
                 ctx.channel().closeFuture().addListener(new ChannelFutureListener() {
                     @Override
                     public void operationComplete(ChannelFuture future) throws Exception {
-                        sessionData.updateLastAccessTime();
-                        sessionData.decUsage();
+                    sessionData.updateLastAccessTime();
+                    sessionData.decUsage();
                     }
                 });
 
-                CipherServerEncoderHandler encoderHandler = new CipherServerEncoderHandler(splittableRandom, sessionData.getSessionId(), holder);
-                CipherDecoderHandler decoderHandler = new CipherDecoderHandler(holder);
+                CipherServerEncoderHandler encoderHandler = new CipherServerEncoderHandler(randomGenerator, newSessionId, cryptoService);
+                CipherDecoderHandler decoderHandler = new CipherDecoderHandler(cryptoService);
                 
                 if (useSSL) {
                     ctx.pipeline().addAfter("sslHandler", "encoder", encoderHandler);

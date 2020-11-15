@@ -7,7 +7,7 @@ java -jar continent.jar vpn
 
 #### 1. Generate VPN keys per client
 
-java -XX:CompileCommand=exclude,com/continent/random/entropy/JitterEntropy.* -jar continent.jar vpn-keys
+java -jar continent.jar vpn g
 
 You'll get both client and server keys.
 
@@ -26,7 +26,7 @@ keys:
 
 #### 3. Run VPN server
 
-java -XX:CompileCommand=exclude,com/continent/random/entropy/JitterEntropy.* -jar continent.jar vpn-server server.yaml
+java -jar continent.jar vpn s server.yaml
 
 #### 4. Create `client.yaml` configuration file for VPN client
 
@@ -46,7 +46,7 @@ key: "<define client key here>"
 
 #### 5. Run VPN client
 
-java -XX:CompileCommand=exclude,com/continent/random/entropy/JitterEntropy.* -jar continent.jar vpn-client client.yaml
+java -jar continent.jar vpn c client.yaml
 
 #### 6. Run Browser with VPN client as proxy server
 
