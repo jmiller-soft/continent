@@ -1,4 +1,4 @@
-﻿# Continent - VPN and file container with military-grade encryption
+﻿# Continent - secure VPN proxy (client and server) and file container with military-grade encryption
 
 ## Use cases
 
