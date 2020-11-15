@@ -60,5 +60,5 @@
 
 ## Download
 
-[continent.jar.zip (remove zip extension)](https://github.com/jmiller-soft/continent/files/3998227/continent.jar.zip)
+[continent.jar](https://github.com/jmiller-soft/continent/releases/download/1.1.0/continent.jar)
 
