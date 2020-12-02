@@ -1,0 +1,1 @@
+﻿Source code of [Hardware RNG based on CPU timing jitter](http://www.chronox.de/jent.html) with JNI interface.

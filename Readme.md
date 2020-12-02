@@ -11,6 +11,8 @@
 
 ## Usage examples
 
+[How to use Continent VPN as proxy chain](vpn-proxy-chain.md)  
+
 [How to use Continent VPN with browser](vpn-browser-example.md)  
 
 [How to use Continent VPN with Email client](vpn-email-client-example.md)  
@@ -61,4 +63,3 @@
 ## Download
 
 [continent.jar](https://github.com/jmiller-soft/continent/releases/download/1.1.0/continent.jar)
-

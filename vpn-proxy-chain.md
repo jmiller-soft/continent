@@ -1,4 +1,6 @@
-﻿## How to use Continent VPN with Email client
+## How to use Continent VPN as proxy chain
+
+Continent allows to create chain with any type of proxy - socks4/5, http, https... All traffic passes first through continent and then your proxy. Thus you behind two proxies.
 
 #### Show usage help
 
@@ -30,7 +32,7 @@ java -jar continent.jar vpn s server.yaml
 
 #### 4. Create `client.yaml` configuration file for VPN client
 
-Add your IMAP and SMTP servers in `portMapping` config section.
+Add your Proxy server in `portMapping` config section
 Add server to `servers` config section
 Add client key to `keys` config section
 
@@ -38,37 +40,20 @@ Add client key to `keys` config section
 port: 1023
 servers:
      - "encrypted://<server ip>:<server port>"
-keyRotationInterval: "3600:7200" #key changed every randomly selected interval between 3600 and 7200 minutes
+keyRotationInterval: "3600:7200"
 tcpNoDelay: true
 maxWriteDelayMs: 0
 key: "<client key>"
 portMapping:
-     1590: "imap.myserver.com:590"
-     1993: "smtp.myserver.com:993"
+     1441: "proxy.com:4041" 
 ```
 
 #### 5. Run VPN client
 
 java -jar continent.jar vpn c client.yaml
 
-#### 6. Bind email servers to local host
 
-Add to hosts file:
 
-127.0.0.1 imap.myserver.com
-127.0.0.1 smtp.myserver.com
+#### 6. Use your proxy server
 
-#### 7. Run Email client with follow settings
-
-IMAP server:
-
-```
-imap.myserver.com:1590
-```
-
-SMTP server:
-
-```
-smtp.myserver.com:1993
-```
-
+Now you can use proxy bounded to 1441 port.

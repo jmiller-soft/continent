@@ -1,6 +1,6 @@
 ## How to use Continent file container with one-time pad
 
-One-time pad derived from Skein PRNG. Skein PRNG continuously seeded with 64-bit values derived from Hardware RNG. New seed value generation time depends on CPU speed. Overall key data could be about 2 million bits per 1Gb of encrypted data. This gives almost perfect secrecy. In non-compressed format one-time pad size coincides with size of container.
+One-time pad derived from Skein PRNG. Skein PRNG continuously seeded with 64-bit values derived from [Hardware RNG based on CPU timing jitter](http://www.chronox.de/jent.html). New seed value generation time depends on CPU speed. Overall key data could be about 2 million bits per 1Gb of encrypted data. This gives almost perfect secrecy. In non-compressed format one-time pad size coincides with size of container.
 
 #### Show usage help
 
